@@ -1,8 +1,8 @@
 {
-  "name": "Voice Poker Dealer",
+  "name": "Poker Dealer",
   "short_name": "Poker",
-  "description": "Voice-controlled Texas Hold'em poker assistant",
-  "start_url": "/",
+  "description": "Voice-controlled Texas Hold'em poker dealer",
+  "start_url": "/poker-app",
   "display": "standalone",
   "orientation": "portrait",
   "theme_color": "#09090b",
