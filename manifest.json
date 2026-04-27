@@ -3,6 +3,7 @@
   "short_name": "Poker",
   "description": "Voice-controlled Texas Hold'em poker dealer",
   "start_url": "/poker-app",
+  "scope": "/poker-app",
   "display": "standalone",
   "orientation": "portrait",
   "theme_color": "#09090b",
