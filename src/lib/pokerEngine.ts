@@ -536,6 +536,73 @@ export const evaluateShowdown = (state: GameState): HandResult[] => {
   return results;
 };
 
+/**
+ * Manual showdown resolution:
+ * - winnersByPot[i] is one or more player IDs selected as winners for pots[i]
+ * - each selected ID must be eligible for that pot
+ * - supports split pots by selecting multiple winners for the same pot
+ */
+export const settleShowdownByPotWinners = (state: GameState, winnersByPot: string[][]) => {
+  if (state.phase !== "showdown") throw new Error("Not in showdown phase.");
+  const pots: Pot[] =
+    state.pots?.length > 0
+      ? state.pots
+      : [{ amount: state.pot, eligibleIds: inHandPlayers(state).map((p) => p.id) }];
+
+  if (winnersByPot.length !== pots.length) {
+    throw new Error(`Need winner selection for all ${pots.length} pot(s).`);
+  }
+
+  const allWinnerIds = new Set<string>();
+  let totalDistributed = 0;
+  const logLines: string[] = [];
+
+  pots.forEach((pot, i) => {
+    const selected = [...new Set((winnersByPot[i] ?? []).filter(Boolean))];
+    if (selected.length === 0) throw new Error(`Select at least one winner for pot #${i + 1}.`);
+    if (selected.some((id) => !pot.eligibleIds.includes(id))) {
+      throw new Error(`Invalid winner selected for pot #${i + 1}.`);
+    }
+
+    const share = Math.floor(pot.amount / selected.length);
+    const remainder = pot.amount - share * selected.length;
+
+    selected.forEach((winnerId, idx) => {
+      const p = state.players.find((pl) => pl.id === winnerId);
+      if (!p) throw new Error("Player not found.");
+      p.chips += share + (idx === 0 ? remainder : 0);
+      allWinnerIds.add(winnerId);
+    });
+
+    totalDistributed += pot.amount;
+    const winnerNames = selected.map((id) => state.players.find((p) => p.id === id)?.name ?? id);
+    logLines.push(
+      `${i === 0 ? "Main pot" : `Side pot ${i}`}: ${winnerNames.join(" / ")} won ${pot.amount}.`,
+    );
+  });
+
+  const firstWinnerId = [...allWinnerIds][0];
+  if (firstWinnerId) {
+    state.chipAnimation = {
+      id: chipAnimId(),
+      type: "to-player",
+      playerId: firstWinnerId,
+      amount: totalDistributed,
+    };
+  }
+  state.winners = [...allWinnerIds];
+  state.street = "showdown";
+  state.phase = "showdown";
+  state.showdownOrder = [];
+  state.showdownRevealedIds = [];
+  state.showdownPendingCard = null;
+  state.showdownHandResults = {};
+
+  logLines.reverse().forEach((line) => state.log.unshift(line));
+  const finalNames = [...allWinnerIds].map((id) => state.players.find((p) => p.id === id)?.name ?? id);
+  state.log.unshift(`Showdown settled manually: ${finalNames.join(" & ")} won ${totalDistributed} chips.`);
+};
+
 // ─── Next round ───────────────────────────────────────────────────────────────
 
 export const startNextRound = (state: GameState): GameState => {

@@ -799,9 +799,11 @@ const EconomyModal = ({
   open: boolean; onClose: () => void; players: Player[];
   buyInAmount: number; onAfterRebuy?: (name: string) => void;
 }) => {
-  const { rebuy, setChips } = useGameStore();
+  const { rebuy, setChips, setTotalBuyIn } = useGameStore();
   const [editingChipsId, setEditingChipsId] = useState<string | null>(null);
   const [editingChipsVal, setEditingChipsVal] = useState("");
+  const [editingBuyInId, setEditingBuyInId] = useState<string | null>(null);
+  const [editingBuyInVal, setEditingBuyInVal] = useState("");
   const txns = computeSettlement(players);
   const totalPot = players.reduce((s, p) => s + p.totalBuyIn, 0);
   const brokePlayers = players.filter((p) => p.chips === 0 && p.status !== "sit-out" || p.status === "sit-out");
@@ -812,6 +814,12 @@ const EconomyModal = ({
     if (!isNaN(val) && val >= 0) setChips(playerId, val);
     setEditingChipsId(null);
     setEditingChipsVal("");
+  };
+  const commitBuyInEdit = (playerId: string) => {
+    const val = parseInt(editingBuyInVal, 10);
+    if (!isNaN(val) && val >= 0) setTotalBuyIn(playerId, val);
+    setEditingBuyInId(null);
+    setEditingBuyInVal("");
   };
 
   return (
@@ -880,7 +888,7 @@ const EconomyModal = ({
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Standings</h3>
-                  <span className="text-[10px] text-zinc-600 italic">Tap chip count to correct</span>
+                  <span className="text-[10px] text-zinc-600 italic">Tap buy-in or chips to correct</span>
                 </div>
                 <div className="rounded-2xl border border-zinc-800 overflow-hidden">
                   <div className="grid grid-cols-4 bg-zinc-800/60 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -892,6 +900,7 @@ const EconomyModal = ({
                   {players.map((p) => {
                     const net = p.chips - p.totalBuyIn;
                     const isBroke = p.chips === 0;
+                    const isEditingBuyIn = editingBuyInId === p.id;
                     const isEditing = editingChipsId === p.id;
                     return (
                       <div key={p.id}
@@ -903,7 +912,29 @@ const EconomyModal = ({
                             {isBroke && <p className="text-[9px] text-rose-400/70 font-semibold leading-none mt-0.5">OUT</p>}
                           </div>
                         </div>
-                        <span className="text-right text-zinc-400 text-[12px]">₹{p.totalBuyIn}</span>
+                        {isEditingBuyIn ? (
+                          <input
+                            autoFocus
+                            type="number"
+                            min={0}
+                            value={editingBuyInVal}
+                            onChange={(e) => setEditingBuyInVal(e.target.value)}
+                            onBlur={() => commitBuyInEdit(p.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitBuyInEdit(p.id);
+                              if (e.key === "Escape") { setEditingBuyInId(null); setEditingBuyInVal(""); }
+                            }}
+                            className="text-right text-[12px] font-bold bg-zinc-800 border border-violet-500 rounded px-1 w-full focus:outline-none text-white"
+                            style={{ fontSize: 12 }}
+                          />
+                        ) : (
+                          <button
+                            onClick={() => { setEditingBuyInId(p.id); setEditingBuyInVal(String(p.totalBuyIn)); }}
+                            className="text-right text-zinc-400 text-[12px] w-full rounded px-1 py-0.5 transition hover:bg-violet-900/30 hover:border hover:border-violet-500/50 border border-transparent"
+                          >
+                            ₹{p.totalBuyIn}
+                          </button>
+                        )}
                         {isEditing ? (
                           <input
                             autoFocus
@@ -912,7 +943,10 @@ const EconomyModal = ({
                             value={editingChipsVal}
                             onChange={(e) => setEditingChipsVal(e.target.value)}
                             onBlur={() => commitChipEdit(p.id)}
-                            onKeyDown={(e) => { if (e.key === "Enter") commitChipEdit(p.id); if (e.key === "Escape") { setEditingChipsId(null); } }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitChipEdit(p.id);
+                              if (e.key === "Escape") { setEditingChipsId(null); setEditingChipsVal(""); }
+                            }}
                             className="text-right text-[12px] font-bold bg-zinc-800 border border-violet-500 rounded px-1 w-full focus:outline-none text-white"
                             style={{ fontSize: 12 }}
                           />
@@ -966,6 +1000,181 @@ const EconomyModal = ({
           </motion.div>
         </motion.div>
       )}
+    </AnimatePresence>
+  );
+};
+
+// ─── Showdown winner picker modal ─────────────────────────────────────────────
+const ShowdownWinnerModal = ({
+  open,
+  players,
+  pots,
+  onConfirm,
+}: {
+  open: boolean;
+  players: Player[];
+  pots: Pot[];
+  onConfirm: (winnersByPot: string[][]) => void;
+}) => {
+  const unresolved = pots.map((pot, i) => ({
+    idx: i,
+    pot,
+    autoWinner: pot.eligibleIds.length === 1 ? [pot.eligibleIds[0]] : null,
+  }));
+  const needsChoice = unresolved.filter((p) => !p.autoWinner);
+  const collapseToSingleChoice =
+    needsChoice.length > 1 &&
+    needsChoice.every(
+      (x) =>
+        x.pot.eligibleIds.length === needsChoice[0].pot.eligibleIds.length &&
+        x.pot.eligibleIds.every((id, i) => id === needsChoice[0].pot.eligibleIds[i]),
+    );
+
+  const [step, setStep] = useState(0);
+  const [pickedByPot, setPickedByPot] = useState<Record<number, string[]>>({});
+
+  useEffect(() => {
+    if (open) {
+      setStep(0);
+      setPickedByPot({});
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (needsChoice.length > 0) return;
+    const auto = pots.map((pot) => (pot.eligibleIds.length === 1 ? [pot.eligibleIds[0]] : []));
+    onConfirm(auto);
+  }, [needsChoice.length, onConfirm, open, pots]);
+
+  if (!open) return null;
+
+  const sequence = collapseToSingleChoice ? needsChoice.slice(0, 1) : needsChoice;
+  const current = sequence[step];
+  const selected = current ? pickedByPot[current.idx] ?? [] : [];
+  const totalPots = collapseToSingleChoice ? 1 : sequence.length;
+
+  const togglePick = (playerId: string) => {
+    if (!current) return;
+    setPickedByPot((prev) => {
+      const existing = prev[current.idx] ?? [];
+      const next = existing.includes(playerId)
+        ? existing.filter((id) => id !== playerId)
+        : [...existing, playerId];
+      return { ...prev, [current.idx]: next };
+    });
+  };
+
+  const buildFinal = () => {
+    const out: string[][] = pots.map(() => []);
+    unresolved.forEach((p) => {
+      if (p.autoWinner) out[p.idx] = p.autoWinner;
+    });
+    if (collapseToSingleChoice && sequence[0]) {
+      const firstPick = pickedByPot[sequence[0].idx] ?? [];
+      needsChoice.forEach((p) => {
+        out[p.idx] = firstPick;
+      });
+      return out;
+    }
+    sequence.forEach((p) => {
+      out[p.idx] = pickedByPot[p.idx] ?? [];
+    });
+    return out;
+  };
+
+  const currentEligible = current
+    ? players.filter((p) => current.pot.eligibleIds.includes(p.id))
+    : [];
+  const readyForNext = selected.length > 0;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      >
+        <motion.div
+          initial={{ scale: 0.92, y: 20 }}
+          animate={{ scale: 1, y: 0 }}
+          exit={{ scale: 0.92, y: 20 }}
+          transition={{ type: "spring", stiffness: 360, damping: 28 }}
+          className="mx-5 w-full max-w-[360px] rounded-3xl border border-violet-400/30 bg-zinc-950 p-5 shadow-2xl"
+        >
+          <div className="mb-3">
+            <h3 className="text-lg font-black text-violet-200">Settle Showdown</h3>
+            <p className="text-xs text-zinc-500">
+              Select winner{collapseToSingleChoice ? "" : "(s)"} for each pot.
+            </p>
+          </div>
+
+          {pots.length > 1 && (
+            <div className="mb-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-[11px] text-zinc-400">
+              {collapseToSingleChoice
+                ? "All contested pots have same eligible players. One selection will apply to all."
+                : `Pot ${step + 1} of ${totalPots}`}
+            </div>
+          )}
+
+          {current && (
+            <>
+              <div className="mb-2 text-sm font-bold text-amber-300">
+                {current.idx === 0 ? "Main Pot" : `Side Pot ${current.idx}`} • {current.pot.amount} chips
+              </div>
+              <div className="mb-4 space-y-2">
+                {currentEligible.map((p) => {
+                  const active = selected.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => togglePick(p.id)}
+                      className={`w-full rounded-xl border px-3 py-2 text-left transition ${
+                        active
+                          ? "border-emerald-500/50 bg-emerald-900/25 text-emerald-200"
+                          : "border-zinc-700 bg-zinc-900/70 text-zinc-300 hover:border-violet-500/40"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold">{p.name}</span>
+                        <span className="text-xs text-zinc-500">{p.chips} chips</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => setStep((s) => Math.max(0, s - 1))}
+              disabled={step === 0}
+              className="flex-1 rounded-xl border border-zinc-700 py-2.5 text-sm text-zinc-400 disabled:opacity-30"
+            >
+              Back
+            </button>
+            {step < totalPots - 1 ? (
+              <button
+                onClick={() => setStep((s) => s + 1)}
+                disabled={!readyForNext}
+                className="flex-1 rounded-xl bg-violet-600 py-2.5 text-sm font-bold text-white shadow-lg shadow-violet-600/30 disabled:opacity-40"
+              >
+                Next Pot
+              </button>
+            ) : (
+              <button
+                onClick={() => onConfirm(buildFinal())}
+                disabled={!readyForNext}
+                className="flex-1 rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-600/30 disabled:opacity-40"
+              >
+                Distribute Chips
+              </button>
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
     </AnimatePresence>
   );
 };
@@ -1382,7 +1591,7 @@ const ShreyasWatermark = () => (
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const { game, runVoiceText, actionCall, actionCheck, actionFold, actionRaiseTo, actionAllIn, undo, nextRound } =
+  const { game, runVoiceText, actionCall, actionCheck, actionFold, actionRaiseTo, actionAllIn, undo, nextRound, settleShowdown } =
     useGameStore();
 
   // Splash screen
@@ -1519,6 +1728,8 @@ export default function App() {
   const nextRevealId = game.phase === "showdown"
     ? game.showdownOrder.find((id) => !game.showdownRevealedIds.includes(id))
     : undefined;
+  const manualPots = game.pots?.length ? game.pots : [{ amount: game.pot, eligibleIds: game.players.filter((p) => p.status !== "folded").map((p) => p.id) }];
+  const showdownNeedsManualSettle = game.phase === "showdown" && game.winners.length === 0 && manualPots.length > 0;
 
   // How many face-down backs to show while the flop is being revealed one by one
   const flopPendingSlots =
@@ -1596,15 +1807,22 @@ export default function App() {
               <div className="absolute left-1/2 top-[46%] -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5">
                 <CommunityCards cards={game.communityCards} pendingSlots={flopPendingSlots} />
                 {game.phase === "showdown" ? (
-                  <ShowdownCenter
-                    players={game.players}
-                    showdownOrder={game.showdownOrder}
-                    showdownRevealedIds={game.showdownRevealedIds}
-                    nextRevealId={nextRevealId}
-                    showdownHandResults={game.showdownHandResults}
-                    winners={game.winners}
-                    pot={game.pot}
-                  />
+                  game.winners.length > 0 ? (
+                    <ShowdownCenter
+                      players={game.players}
+                      showdownOrder={game.showdownOrder}
+                      showdownRevealedIds={game.showdownRevealedIds}
+                      nextRevealId={nextRevealId}
+                      showdownHandResults={game.showdownHandResults}
+                      winners={game.winners}
+                      pot={game.pot}
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-violet-400/30 bg-zinc-950/80 px-4 py-3 text-center">
+                      <p className="text-sm font-bold text-violet-200">Showdown Ready</p>
+                      <p className="mt-0.5 text-[10px] text-zinc-400">Select winners in the popup to settle pots.</p>
+                    </div>
+                  )
                 ) : (
                   <PotDisplay pot={game.pot} pots={game.pots} />
                 )}
@@ -1734,6 +1952,13 @@ export default function App() {
           open={raiseOpen} onClose={() => setRaiseOpen(false)} onConfirm={actionRaiseTo}
           minRaise={game.betting.minRaiseTo} maxChips={currentPlayer?.chips ?? 0}
           currentBet={game.betting.currentBet}
+        />
+
+        <ShowdownWinnerModal
+          open={showdownNeedsManualSettle}
+          players={game.players}
+          pots={manualPots}
+          onConfirm={(winnersByPot) => settleShowdown(winnersByPot)}
         />
 
         {/* ── Voice debug overlay ── */}

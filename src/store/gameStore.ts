@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { applyAllIn, applyCall, applyCheck, applyFold, applyRaiseTo, createInitialState, evaluateShowdown, startNextRound, addCommunityCards, applyRevealCard } from "../lib/pokerEngine";
+import { applyAllIn, applyCall, applyCheck, applyFold, applyRaiseTo, createInitialState, evaluateShowdown, startNextRound, addCommunityCards, applyRevealCard, settleShowdownByPotWinners } from "../lib/pokerEngine";
 import { parseVoiceCommand } from "../lib/voice";
 import type { Card, GameState, SetupPayload } from "../types/game";
 
@@ -21,6 +21,8 @@ interface GameStore {
   rebuy: (playerId: string, amount: number) => void;
   adjustChips: (playerId: string, delta: number) => void;
   setChips: (playerId: string, amount: number) => void;
+  setTotalBuyIn: (playerId: string, amount: number) => void;
+  settleShowdown: (winnersByPot: string[][]) => void;
   undo: () => void;
   nextRound: () => void;
 }
@@ -140,6 +142,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
       else if (p.status === "sit-out") p.status = "active";
       g.log.unshift(`${p.name} chips corrected ${prev} → ${p.chips}.`);
     }),
+  setTotalBuyIn: (playerId, amount) =>
+    withSnapshot(set, (g) => {
+      const p = g.players.find((x) => x.id === playerId);
+      if (!p) throw new Error("Player not found.");
+      const prev = p.totalBuyIn;
+      p.totalBuyIn = Math.max(0, Math.round(amount));
+      g.log.unshift(`${p.name} buy-in corrected ${prev} → ${p.totalBuyIn}.`);
+    }),
+  settleShowdown: (winnersByPot) =>
+    withSnapshot(set, (g) => {
+      settleShowdownByPotWinners(g, winnersByPot);
+    }),
   undo: () =>
     set((prev) => {
       if (!prev.history.length) return prev;
@@ -148,6 +162,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }),
   nextRound: () =>
     withSnapshot(set, (g) => {
+      if (g.street === "showdown" && g.winners.length === 0) {
+        throw new Error("Settle showdown winners before starting the next hand.");
+      }
       if (g.street !== "showdown") {
         const results = evaluateShowdown(g);
         if (!results.length) throw new Error("Need hands + board before showdown.");
