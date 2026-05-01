@@ -1,8 +1,9 @@
 // Voice Poker Dealer — Service Worker
 // Provides basic caching for PWA offline shell + fast repeat loads.
 
-const CACHE = "poker-v1";
-const PRECACHE = ["/", "/index.html"];
+const CACHE = "poker-v2";
+const BASE = self.registration.scope;
+const PRECACHE = [BASE, `${BASE}index.html`];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
