@@ -799,11 +799,20 @@ const EconomyModal = ({
   open: boolean; onClose: () => void; players: Player[];
   buyInAmount: number; onAfterRebuy?: (name: string) => void;
 }) => {
-  const { rebuy } = useGameStore();
+  const { rebuy, setChips } = useGameStore();
+  const [editingChipsId, setEditingChipsId] = useState<string | null>(null);
+  const [editingChipsVal, setEditingChipsVal] = useState("");
   const txns = computeSettlement(players);
   const totalPot = players.reduce((s, p) => s + p.totalBuyIn, 0);
   const brokePlayers = players.filter((p) => p.chips === 0 && p.status !== "sit-out" || p.status === "sit-out");
   const hasBroke = brokePlayers.length > 0;
+
+  const commitChipEdit = (playerId: string) => {
+    const val = parseInt(editingChipsVal, 10);
+    if (!isNaN(val) && val >= 0) setChips(playerId, val);
+    setEditingChipsId(null);
+    setEditingChipsVal("");
+  };
 
   return (
     <AnimatePresence>
@@ -869,17 +878,21 @@ const EconomyModal = ({
 
               {/* Player standings table */}
               <div>
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">Standings</h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Standings</h3>
+                  <span className="text-[10px] text-zinc-600 italic">Tap chip count to correct</span>
+                </div>
                 <div className="rounded-2xl border border-zinc-800 overflow-hidden">
                   <div className="grid grid-cols-4 bg-zinc-800/60 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                     <span>Player</span>
                     <span className="text-right">Bought in</span>
-                    <span className="text-right">Chips</span>
+                    <span className="text-right">Chips ✏</span>
                     <span className="text-right">Net P/L</span>
                   </div>
                   {players.map((p) => {
                     const net = p.chips - p.totalBuyIn;
                     const isBroke = p.chips === 0;
+                    const isEditing = editingChipsId === p.id;
                     return (
                       <div key={p.id}
                         className={`grid grid-cols-4 border-t border-zinc-800/60 px-3 py-2.5 text-sm items-center ${isBroke ? "bg-rose-950/20" : ""}`}>
@@ -891,7 +904,26 @@ const EconomyModal = ({
                           </div>
                         </div>
                         <span className="text-right text-zinc-400 text-[12px]">₹{p.totalBuyIn}</span>
-                        <span className={`text-right text-[12px] font-bold ${isBroke ? "text-rose-400/60" : "text-zinc-300"}`}>{p.chips}</span>
+                        {isEditing ? (
+                          <input
+                            autoFocus
+                            type="number"
+                            min={0}
+                            value={editingChipsVal}
+                            onChange={(e) => setEditingChipsVal(e.target.value)}
+                            onBlur={() => commitChipEdit(p.id)}
+                            onKeyDown={(e) => { if (e.key === "Enter") commitChipEdit(p.id); if (e.key === "Escape") { setEditingChipsId(null); } }}
+                            className="text-right text-[12px] font-bold bg-zinc-800 border border-violet-500 rounded px-1 w-full focus:outline-none text-white"
+                            style={{ fontSize: 12 }}
+                          />
+                        ) : (
+                          <button
+                            onClick={() => { setEditingChipsId(p.id); setEditingChipsVal(String(p.chips)); }}
+                            className={`text-right text-[12px] font-bold w-full rounded px-1 py-0.5 transition hover:bg-violet-900/30 hover:border hover:border-violet-500/50 border border-transparent ${isBroke ? "text-rose-400/60" : "text-zinc-300"}`}
+                          >
+                            {p.chips}
+                          </button>
+                        )}
                         <span className={`text-right font-bold text-[12px] ${net > 0 ? "text-emerald-400" : net < 0 ? "text-rose-400" : "text-zinc-500"}`}>
                           {net > 0 ? "+" : ""}{net}
                         </span>
@@ -1380,7 +1412,7 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game?.winners]);
 
-  // Voice state — a single boolean "active" avoids flicker
+  // Voice state
   const [micActive, setMicActive] = useState(false);
   const [micError, setMicError] = useState("");
   const [liveText, setLiveText] = useState("");
@@ -1393,25 +1425,24 @@ export default function App() {
 
   const listenerRef = useRef<{ start: () => void; stop: () => void } | null>(null);
   const mountedRef = useRef(true);
+  // PTT: tracks whether the button is actively held to prevent race conditions
+  const pttActiveRef = useRef(false);
+  const pttStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
-  // Create the listener as soon as we know speech is supported (once per game session)
+  // Create listener on game start — do NOT auto-start (PTT mode only)
   useEffect(() => {
     if (!game || !isVoiceSupported()) return;
 
     const listener = createVoiceListener(
-      // Final transcript
       (t) => {
         if (!mountedRef.current) return;
         setTranscriptHistory((h) => [t, ...h].slice(0, 8));
         setLiveText("");
         runVoiceText(t);
       },
-      // Interim (live) text
       (t) => { if (mountedRef.current) setLiveText(t); },
-      // Surface error to UI (only unrecoverable / notable ones)
       (msg) => { if (mountedRef.current) setMicError(msg); },
-      // Debug event stream
       (ev) => {
         if (!mountedRef.current) return;
         setDebugLog((prev) => [ev, ...prev].slice(0, 40));
@@ -1420,12 +1451,11 @@ export default function App() {
     if (!listener) return;
 
     listenerRef.current = listener;
-    if (!game.voiceMuted) {
-      listener.start();
-      setMicActive(true);
-    }
+    // PTT: never auto-start — user must hold the button
 
     return () => {
+      pttActiveRef.current = false;
+      if (pttStopTimerRef.current) clearTimeout(pttStopTimerRef.current);
       listener.stop();
       listenerRef.current = null;
       setMicActive(false);
@@ -1433,17 +1463,24 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game?.listeningSupported]);
 
-  // Mute / unmute without recreating the listener
-  useEffect(() => {
-    if (!listenerRef.current || !game) return;
-    if (game.voiceMuted) {
-      listenerRef.current.stop();
-      setMicActive(false);
-    } else {
-      listenerRef.current.start();
-      setMicActive(true);
-    }
-  }, [game?.voiceMuted]);
+  const handlePTTStart = () => {
+    if (!listenerRef.current) return;
+    if (pttStopTimerRef.current) { clearTimeout(pttStopTimerRef.current); pttStopTimerRef.current = null; }
+    pttActiveRef.current = true;
+    listenerRef.current.start();
+    setMicActive(true);
+  };
+
+  const handlePTTEnd = () => {
+    pttActiveRef.current = false;
+    // Delay stop slightly so the browser can finalise the last recognition result
+    pttStopTimerRef.current = setTimeout(() => {
+      if (!pttActiveRef.current) {
+        listenerRef.current?.stop();
+        setMicActive(false);
+      }
+    }, 500);
+  };
 
   if (showSplash) {
     return <SplashScreen onDone={() => setShowSplash(false)} />;
@@ -1515,17 +1552,25 @@ export default function App() {
             <span className="rounded-full border border-zinc-700/70 bg-zinc-900/70 px-3 py-1 text-xs font-bold uppercase tracking-wide text-zinc-200">
               {game.street}
             </span>
-            {/* Mic pill — single stable state, no flicker */}
-            <button
-              onClick={() => runVoiceText(game.voiceMuted ? "unmute" : "mute")}
-              className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition
-                ${micActive && !game.voiceMuted
-                  ? "border-emerald-500/50 bg-emerald-900/30 text-emerald-300"
-                  : "border-zinc-700 bg-zinc-900/70 text-zinc-500"}`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${micActive && !game.voiceMuted ? "animate-pulse bg-emerald-400" : "bg-zinc-600"}`} />
-              {game.voiceMuted ? "Muted" : micActive ? "Listening" : "Mic off"}
-            </button>
+            {/* Push-to-Talk mic button — hold to speak */}
+            {isVoiceSupported() ? (
+              <button
+                onPointerDown={handlePTTStart}
+                onPointerUp={handlePTTEnd}
+                onPointerLeave={handlePTTEnd}
+                onPointerCancel={handlePTTEnd}
+                style={{ touchAction: "none", userSelect: "none", WebkitUserSelect: "none" }}
+                className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition select-none
+                  ${micActive
+                    ? "border-emerald-500/60 bg-emerald-900/40 text-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.25)]"
+                    : "border-violet-600/50 bg-violet-900/20 text-violet-400 hover:border-violet-500/70"}`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${micActive ? "animate-pulse bg-emerald-400" : "bg-violet-500"}`} />
+                {micActive ? "Listening…" : "Hold 🎤"}
+              </button>
+            ) : (
+              <span className="rounded-full border border-zinc-700 bg-zinc-900/70 px-3 py-1 text-xs text-zinc-600">No mic</span>
+            )}
           </div>
 
           {/* ── Table section — flex-1, centered ── */}
@@ -1701,9 +1746,9 @@ export default function App() {
               <div className="mb-2.5 flex items-center justify-between">
                 <span className="font-bold text-violet-200">Voice Debug</span>
                 <button onClick={() => setDebugLog([])} className="rounded px-2 py-0.5 text-[10px] text-zinc-600 hover:text-zinc-300">clear</button>
-                <span className={`flex items-center gap-1.5 text-[11px] ${micActive && !game.voiceMuted ? "text-emerald-300" : "text-zinc-500"}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${micActive && !game.voiceMuted ? "animate-pulse bg-emerald-400" : "bg-zinc-700"}`} />
-                  {micActive && !game.voiceMuted ? "Mic live" : "Mic off"}
+                <span className={`flex items-center gap-1.5 text-[11px] ${micActive ? "text-emerald-300" : "text-zinc-500"}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${micActive ? "animate-pulse bg-emerald-400" : "bg-zinc-700"}`} />
+                  {micActive ? "Mic live (PTT)" : "Hold button to speak"}
                 </span>
               </div>
 

@@ -20,6 +20,7 @@ interface GameStore {
   addBoardCards: (cards: Card[]) => void;
   rebuy: (playerId: string, amount: number) => void;
   adjustChips: (playerId: string, delta: number) => void;
+  setChips: (playerId: string, amount: number) => void;
   undo: () => void;
   nextRound: () => void;
 }
@@ -67,7 +68,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (command.type === "check") return get().actionCheck();
     if (command.type === "fold") return get().actionFold();
     if (command.type === "all-in") return get().actionAllIn();
-    if (command.type === "raise") return get().actionRaiseTo(command.amount);
+    if (command.type === "raise") {
+      const g = get().game;
+      if (!g) return;
+      // Voice "raise 10" means raise BY 10 on top of the current bet
+      return get().actionRaiseTo(g.betting.currentBet + command.amount);
+    }
     if (command.type === "cards") {
       const game = get().game;
       if (!game) return;
@@ -123,6 +129,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
       p.chips = Math.max(0, p.chips + delta);
       if (p.chips === 0) p.status = "sit-out";
       g.log.unshift(`${p.name} chips adjusted by ${delta}.`);
+    }),
+  setChips: (playerId, amount) =>
+    withSnapshot(set, (g) => {
+      const p = g.players.find((x) => x.id === playerId);
+      if (!p) throw new Error("Player not found.");
+      const prev = p.chips;
+      p.chips = Math.max(0, Math.round(amount));
+      if (p.chips === 0) p.status = "sit-out";
+      else if (p.status === "sit-out") p.status = "active";
+      g.log.unshift(`${p.name} chips corrected ${prev} → ${p.chips}.`);
     }),
   undo: () =>
     set((prev) => {

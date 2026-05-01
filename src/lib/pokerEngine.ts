@@ -186,7 +186,7 @@ export const createInitialState = (payload: SetupPayload): GameState => {
     pots: pots.length ? pots : [{ amount: initialPot, eligibleIds: players.map((p) => p.id) }],
     betting: {
       currentBet: payload.bigBlind,
-      minRaiseTo: payload.bigBlind * 2,
+      minRaiseTo: payload.bigBlind + 1,
       actedPlayers: [],
     },
     phase: "betting",
@@ -275,8 +275,8 @@ export const applyCheck = (state: GameState) => {
 export const applyRaiseTo = (state: GameState, raiseTo: number) => {
   if (state.phase !== "betting") throw new Error("Waiting for community cards.");
   const current = state.players[state.turnIndex];
-  if (raiseTo < state.betting.minRaiseTo) {
-    throw new Error(`Minimum raise-to is ${state.betting.minRaiseTo}.`);
+  if (raiseTo <= state.betting.currentBet) {
+    throw new Error(`Raise must be above current bet of ${state.betting.currentBet}.`);
   }
   const already = handContribution(state, current.id);
   const needed = raiseTo - already;
@@ -289,7 +289,7 @@ export const applyRaiseTo = (state: GameState, raiseTo: number) => {
   state.handContributions[current.id] = (state.handContributions[current.id] ?? 0) + needed;
   state.chipAnimation = { id: chipAnimId(), type: "to-pot", playerId: current.id, amount: needed };
   state.betting.currentBet = raiseTo;
-  state.betting.minRaiseTo = Math.max(state.betting.minRaiseTo, raiseTo + state.bigBlind);
+  state.betting.minRaiseTo = raiseTo + 1;
   state.betting.actedPlayers = [current.id];
 
   // Auto all-in: if the player ran out of chips during the raise, mark them
